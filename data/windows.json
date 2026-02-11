@@ -8,7 +8,11 @@
     "showInHome": true,
     "orderDesktop": 1,
     "orderHome": 1,
-    "isHidden": false
+    "isHidden": false,
+    "content": "",
+    "icon": "user",
+    "layout": "content",
+    "customIconUrl": "/uploads/1768882585607-GlobeLime.png"
   },
   {
     "id": 2,
@@ -19,7 +23,11 @@
     "showInHome": true,
     "orderDesktop": 2,
     "orderHome": 2,
-    "isHidden": false
+    "isHidden": false,
+    "content": "",
+    "icon": "folder",
+    "layout": "content",
+    "customIconUrl": "/uploads/1768882629650-GlobeLime.png"
   },
   {
     "id": 3,
@@ -77,7 +85,8 @@
     "isHidden": false,
     "content": "cbnbnvbnvcbn",
     "icon": "folder",
-    "layout": "projects"
+    "layout": "projects",
+    "customIconUrl": "/uploads/1768882708187-556449318_1348561706851563_1615016405135791753_n.jpg"
   },
   {
     "id": 8,
@@ -85,12 +94,13 @@
     "label": "New tab 2 Test",
     "type": "custom",
     "showOnDesktop": false,
-    "showInHome": true,
+    "showInHome": false,
     "orderDesktop": 8,
     "orderHome": 8,
     "isHidden": false,
     "content": "",
     "icon": "folder",
-    "layout": "content"
+    "layout": "content",
+    "isArchived": true
   }
 ]

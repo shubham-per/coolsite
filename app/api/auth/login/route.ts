@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import bcrypt from 'bcryptjs';
-import { getUserByEmail } from '@/lib/data';
 import { sign } from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
-
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required');
+}
+const jwtSecret: string = JWT_SECRET;
 export async function POST(request: NextRequest) {
   try {
     const { email, password } = await request.json();
@@ -16,20 +17,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get user from database
-    const user = await getUserByEmail(email);
-    
-    if (!user) {
+    // Get credentials from environment variables
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    if (!adminEmail || !adminPassword) {
+      console.error('Admin credentials not configured in environment variables');
       return NextResponse.json(
-        { error: 'Invalid credentials' },
-        { status: 401 }
+        { error: 'Server configuration error' },
+        { status: 500 }
       );
     }
 
-    // Check password
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    
-    if (!isValidPassword) {
+    // Check credentials
+    if (email !== adminEmail || password !== adminPassword) {
       return NextResponse.json(
         { error: 'Invalid credentials' },
         { status: 401 }
@@ -38,24 +39,22 @@ export async function POST(request: NextRequest) {
 
     // Create JWT token
     const token = sign(
-      { 
-        userId: user.id, 
-        email: user.email, 
-        role: user.role 
+      {
+        email: adminEmail,
+        role: 'admin'
       },
-      JWT_SECRET,
+      jwtSecret,
       { expiresIn: '24h' }
     );
 
     // Set HTTP-only cookie
     const response = NextResponse.json(
-      { 
-        success: true, 
-        user: { 
-          id: user.id, 
-          email: user.email, 
-          role: user.role 
-        } 
+      {
+        success: true,
+        user: {
+          email: adminEmail,
+          role: 'admin'
+        }
       },
       { status: 200 }
     );

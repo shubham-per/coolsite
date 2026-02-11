@@ -1,448 +1,340 @@
+
 import fs from "fs"
 import path from "path"
 
-const DATA_DIR = path.join(process.cwd(), "data")
-const CONTENT_FILE = path.join(DATA_DIR, "content.json")
-const ANALYTICS_FILE = path.join(DATA_DIR, "analytics.json")
-const USERS_FILE = path.join(DATA_DIR, "users.json")
-const FAQ_FILE = path.join(DATA_DIR, "faq.json")
-const BACKGROUND_FILE = path.join(DATA_DIR, "background.json")
-const WINDOWS_FILE = path.join(DATA_DIR, "windows.json")
-
-type ContentEntry = {
-  id: number
-  section: string
-  title: string
-  content: string
-  updatedAt: string
-}
-
-type AnalyticsEvent = {
-  id: number
-  visitorId: string
-  page: string
-  action: string
-  userAgent: string
-  ipAddress: string
-  referrer?: string
-  sessionId: string
-  timestamp: string
-}
-
-export type FaqItem = {
-  id: number
-  question: string
-  answer: string
-  order: number
-  isActive: boolean
-  createdAt: string
-  updatedAt: string
-  customTabKey?: string // For custom tab FAQ items
-}
-
-type UserJson = {
-  id: number
-  email: string
-  passwordHash: string
-  role: string
-  createdAt: string
-}
-
-export type BackgroundConfig =
-  | {
-      type: "solid"
-      color: string
-    }
-  | {
-      type: "gradient"
-      from: string
-      via?: string
-      to: string
-    }
-  | {
-      type: "image"
-      imageUrl: string
-      overlay?: boolean
-    }
-
-export type WindowConfig = {
+export interface WindowConfig {
   id: number
   key: string
   label: string
   type: "builtIn" | "custom"
+  content?: string
+  layout?: "content" | "projects" | "gallery" | "faq"
   showOnDesktop: boolean
   showInHome: boolean
   orderDesktop: number
   orderHome: number
   isHidden: boolean
-  content?: string // for custom windows
-  icon?: string // optional icon name for custom/built-in mapping (lucide icon name)
-  customIconUrl?: string // uploaded custom icon image URL
-  layout?: "content" | "projects" | "faq" // how the window should behave (currently used for custom)
+  icon?: string
+  customIconUrl?: string
+  isArchived?: boolean
 }
 
-function ensureDirAndFile(filePath: string, defaultContent: string) {
+export interface Project {
+  id: number
+  title: string
+  description: string
+  category: "engineering" | "games" | "art"
+  imageUrl?: string
+  projectLink?: string
+  tags: string[]
+  photos: string[]
+  keywords: string[]
+  orderIndex: number
+  isActive: boolean
+  customTabKey?: string
+}
+
+export interface SiteConfig {
+  title: string
+  faviconUrl?: string
+}
+
+export function getSiteConfig(): SiteConfig {
+  const defaultConfig: SiteConfig = {
+    title: "Shubu",
+  }
+  return readJsonFile<SiteConfig>("site-config.json", defaultConfig)
+}
+
+export function saveSiteConfig(config: SiteConfig): void {
+  writeJsonFile("site-config.json", config)
+}
+
+export interface Content {
+  section: string
+  title: string
+  content: string
+  imageUrl?: string
+}
+
+export interface ContentEntry {
+  section: string
+  title: string
+  content: string
+  imageUrl?: string
+}
+
+export interface FaqItem {
+  id: number
+  question: string
+  answer: string
+  order: number
+  isActive: boolean
+  customTabKey?: string
+}
+
+export interface BackgroundStyle {
+  type: "solid" | "gradient" | "image"
+  color: string
+  from: string
+  via: string
+  to: string
+  overlay?: boolean
+  imageUrl?: string
+  iconColor?: string
+}
+
+export interface BackgroundConfig {
+  desktop: BackgroundStyle
+  mobile: BackgroundStyle
+}
+
+// Default data functions
+export const defaultWindows = (): WindowConfig[] => [
+  {
+    id: 1,
+    key: "about",
+    label: "about",
+    type: "builtIn",
+    showOnDesktop: false,
+    showInHome: true,
+    orderDesktop: 1,
+    orderHome: 1,
+    isHidden: false,
+    icon: "user",
+  },
+  {
+    id: 2,
+    key: "engineering",
+    label: "engineering",
+    type: "builtIn",
+    showOnDesktop: true,
+    showInHome: true,
+    orderDesktop: 2,
+    orderHome: 2,
+    isHidden: false,
+    icon: "rocket",
+    layout: "projects",
+  },
+  {
+    id: 3,
+    key: "games",
+    label: "games",
+    type: "builtIn",
+    showOnDesktop: true,
+    showInHome: true,
+    orderDesktop: 3,
+    orderHome: 3,
+    isHidden: false,
+    icon: "gamepad2",
+    layout: "projects",
+  },
+  {
+    id: 4,
+    key: "art",
+    label: "art",
+    type: "builtIn",
+    showOnDesktop: true,
+    showInHome: true,
+    orderDesktop: 4,
+    orderHome: 4,
+    isHidden: false,
+    icon: "palette",
+    layout: "gallery",
+  },
+  {
+    id: 5,
+    key: "contact",
+    label: "contact",
+    type: "builtIn",
+    showOnDesktop: false,
+    showInHome: true,
+    orderDesktop: 5,
+    orderHome: 5,
+    isHidden: false,
+    icon: "mail",
+  },
+  {
+    id: 6,
+    key: "faq",
+    label: "faq",
+    type: "builtIn",
+    showOnDesktop: false,
+    showInHome: true,
+    orderDesktop: 6,
+    orderHome: 6,
+    isHidden: false,
+    icon: "help-circle",
+    layout: "faq",
+  },
+]
+
+// Data Access Layer
+
+const DATA_DIR = path.join(process.cwd(), "data")
+
+function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true })
   }
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, defaultContent)
-  }
 }
 
-function readJson<T>(filePath: string, defaultValue: T): T {
-  ensureDirAndFile(filePath, JSON.stringify(defaultValue, null, 2))
-  const raw = fs.readFileSync(filePath, "utf8")
+function readJsonFile<T>(filename: string, defaultValue: T): T {
+  ensureDataDir()
+  const filePath = path.join(DATA_DIR, filename)
+  if (!fs.existsSync(filePath)) {
+    return defaultValue
+  }
   try {
-    return JSON.parse(raw) as T
-  } catch {
+    const data = fs.readFileSync(filePath, "utf-8")
+    return JSON.parse(data) as T
+  } catch (error) {
+    console.error(`Error reading ${filename}:`, error)
     return defaultValue
   }
 }
 
-function writeJson<T>(filePath: string, data: T) {
-  ensureDirAndFile(filePath, JSON.stringify(data, null, 2))
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2))
-}
-
-// ---------- CONTENT (about / contact / faq summary) ----------
-
-export function getContent(section: string): ContentEntry | null {
-  const entries = readJson<ContentEntry[]>(CONTENT_FILE, [])
-  const entry = entries.find((c) => c.section === section)
-  return entry || null
-}
-
-export function updateContent(section: string, title: string, content: string): boolean {
-  const entries = readJson<ContentEntry[]>(CONTENT_FILE, [])
-  const now = new Date().toISOString()
-  const existingIndex = entries.findIndex((c) => c.section === section)
-
-  if (existingIndex >= 0) {
-    entries[existingIndex] = {
-      ...entries[existingIndex],
-      section,
-      title,
-      content,
-      updatedAt: now,
-    }
-  } else {
-    const newId = entries.length ? Math.max(...entries.map((e) => e.id)) + 1 : 1
-    entries.push({
-      id: newId,
-      section,
-      title,
-      content,
-      updatedAt: now,
-    })
-  }
-
-  writeJson(CONTENT_FILE, entries)
-  return true
-}
-
-// ---------- FAQ (advanced, multi-question) ----------
-
-function readFaqItems(): FaqItem[] {
-  const items = readJson<FaqItem[]>(FAQ_FILE, [])
-  return items.sort((a, b) => a.order - b.order || a.id - b.id)
-}
-
-function writeFaqItems(items: FaqItem[]) {
-  writeJson(FAQ_FILE, items)
-}
-
-function syncFaqSummaryContent(items: FaqItem[]) {
-  if (!items.length) {
-    return
-  }
-  const lines: string[] = []
-  for (const item of items.filter((i) => i.isActive)) {
-    lines.push(`Q: ${item.question}`)
-    lines.push(`A: ${item.answer}`)
-    lines.push("") // blank line between questions
-  }
-  const summary = lines.join("\n").trim()
-  updateContent("faq", "Frequently Asked Questions", summary || "FAQ will be updated soon.")
-}
-
-export function getFaqItems(): FaqItem[] {
-  return readFaqItems()
-}
-
-export function createFaqItem(data: { question: string; answer: string; order?: number; customTabKey?: string }): FaqItem {
-  const items = readFaqItems()
-  const now = new Date().toISOString()
-  const newId = items.length ? Math.max(...items.map((i) => i.id)) + 1 : 1
-  const order = typeof data.order === "number" ? data.order : items.length + 1
-
-  const newItem: FaqItem = {
-    id: newId,
-    question: data.question,
-    answer: data.answer,
-    order,
-    isActive: true,
-    createdAt: now,
-    updatedAt: now,
-    customTabKey: data.customTabKey,
-  }
-
-  const nextItems = [...items, newItem]
-  writeFaqItems(nextItems)
-  syncFaqSummaryContent(nextItems)
-
-  return newItem
-}
-
-export function updateFaqItem(id: number, data: Partial<Omit<FaqItem, "id" | "createdAt">>): FaqItem | null {
-  const items = readFaqItems()
-  const index = items.findIndex((i) => i.id === id)
-  if (index === -1) return null
-
-  const now = new Date().toISOString()
-  const updated: FaqItem = {
-    ...items[index],
-    ...data,
-    id,
-    updatedAt: now,
-  }
-
-  const nextItems = [...items]
-  nextItems[index] = updated
-  writeFaqItems(nextItems)
-  syncFaqSummaryContent(nextItems)
-
-  return updated
-}
-
-export function deleteFaqItem(id: number): boolean {
-  const items = readFaqItems()
-  const index = items.findIndex((i) => i.id === id)
-  if (index === -1) return false
-
-  const nextItems = items.filter((i) => i.id !== id)
-  writeFaqItems(nextItems)
-  syncFaqSummaryContent(nextItems)
-  return true
-}
-
-// ---------- ANALYTICS ----------
-
-export function trackVisit(data: {
-  visitorId: string
-  page: string
-  action: string
-  userAgent: string
-  ipAddress: string
-  referrer?: string
-  sessionId: string
-}): void {
-  const events = readJson<AnalyticsEvent[]>(ANALYTICS_FILE, [])
-  const newId = events.length ? Math.max(...events.map((e) => e.id)) + 1 : 1
-  const now = new Date().toISOString()
-
-  const event: AnalyticsEvent = {
-    id: newId,
-    visitorId: data.visitorId,
-    page: data.page,
-    action: data.action,
-    userAgent: data.userAgent,
-    ipAddress: data.ipAddress,
-    referrer: data.referrer,
-    sessionId: data.sessionId,
-    timestamp: now,
-  }
-
-  events.push(event)
-  writeJson(ANALYTICS_FILE, events)
-}
-
-export function getAnalytics(days = 30) {
-  const events = readJson<AnalyticsEvent[]>(ANALYTICS_FILE, [])
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000
-
-  const recent = events.filter((e) => {
-    const ts = new Date(e.timestamp).getTime()
-    return !Number.isNaN(ts) && ts >= cutoff
-  })
-
-  // Page views per page
-  const pageViewMap = new Map<string, number>()
-  for (const e of recent) {
-    const page = e.page || "unknown"
-    pageViewMap.set(page, (pageViewMap.get(page) || 0) + 1)
-  }
-  const pageViews = Array.from(pageViewMap.entries()).map(([page, views]) => ({ page, views }))
-
-  // Daily visits: unique visitors + total views per day
-  const dailyMap = new Map<
-    string,
-    {
-      visitors: Set<string>
-      totalViews: number
-    }
-  >()
-
-  for (const e of recent) {
-    const date = new Date(e.timestamp).toISOString().slice(0, 10)
-    if (!dailyMap.has(date)) {
-      dailyMap.set(date, { visitors: new Set(), totalViews: 0 })
-    }
-    const bucket = dailyMap.get(date)!
-    bucket.visitors.add(e.visitorId)
-    bucket.totalViews += 1
-  }
-
-  const dailyVisits = Array.from(dailyMap.entries())
-    .map(([date, bucket]) => ({
-      date,
-      unique_visitors: bucket.visitors.size,
-      total_views: bucket.totalViews,
-    }))
-    .sort((a, b) => (a.date < b.date ? -1 : 1))
-
-  // Top referrers
-  const refMap = new Map<string, number>()
-  for (const e of recent) {
-    if (!e.referrer) continue
-    const ref = e.referrer
-    refMap.set(ref, (refMap.get(ref) || 0) + 1)
-  }
-
-  const topReferrers = Array.from(refMap.entries())
-    .map(([referrer, visits]) => ({ referrer, visits }))
-    .sort((a, b) => b.visits - a.visits)
-    .slice(0, 10)
-
-  return { pageViews, dailyVisits, topReferrers }
-}
-
-// ---------- USERS (admin auth) ----------
-
-export async function getUserByEmail(email: string) {
-  const users = readJson<UserJson[]>(USERS_FILE, [])
-  const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase())
-  if (!user) return null
-
-  return {
-    id: user.id,
-    email: user.email,
-    password_hash: user.passwordHash,
-    role: user.role,
-    created_at: user.createdAt,
+function writeJsonFile<T>(filename: string, data: T): void {
+  ensureDataDir()
+  const filePath = path.join(DATA_DIR, filename)
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8")
+  } catch (error) {
+    console.error(`Error writing ${filename}:`, error)
   }
 }
 
-// ---------- BACKGROUND (homepage) ----------
-
-const defaultBackground: BackgroundConfig = {
-  type: "gradient",
-  from: "#60a5fa", // blue-400
-  via: "#3b82f6", // blue-500
-  to: "#2563eb", // blue-600
-}
-
-export function getBackground(): BackgroundConfig {
-  return readJson<BackgroundConfig>(BACKGROUND_FILE, defaultBackground)
-}
-
-export function updateBackground(config: BackgroundConfig): void {
-  writeJson(BACKGROUND_FILE, config)
-}
-
-// ---------- WINDOWS (desktop/home tabs) ----------
-
-function defaultWindows(): WindowConfig[] {
-  return [
-    {
-      id: 1,
-      key: "about",
-      label: "about",
-      type: "builtIn",
-      showOnDesktop: false,
-      showInHome: true,
-      orderDesktop: 1,
-      orderHome: 1,
-      isHidden: false,
-      icon: "user",
-      layout: "content",
-    },
-    {
-      id: 2,
-      key: "engineering",
-      label: "engineering",
-      type: "builtIn",
-      showOnDesktop: true,
-      showInHome: true,
-      orderDesktop: 2,
-      orderHome: 2,
-      isHidden: false,
-      icon: "rocket",
-      layout: "projects",
-    },
-    {
-      id: 3,
-      key: "games",
-      label: "games",
-      type: "builtIn",
-      showOnDesktop: true,
-      showInHome: true,
-      orderDesktop: 3,
-      orderHome: 3,
-      isHidden: false,
-      icon: "gamepad2",
-      layout: "projects",
-    },
-    {
-      id: 4,
-      key: "art",
-      label: "art",
-      type: "builtIn",
-      showOnDesktop: true,
-      showInHome: true,
-      orderDesktop: 4,
-      orderHome: 4,
-      isHidden: false,
-      icon: "palette",
-      layout: "projects",
-    },
-    {
-      id: 5,
-      key: "contact",
-      label: "contact",
-      type: "builtIn",
-      showOnDesktop: false,
-      showInHome: true,
-      orderDesktop: 5,
-      orderHome: 5,
-      isHidden: false,
-      icon: "mail",
-      layout: "content",
-    },
-    {
-      id: 6,
-      key: "faq",
-      label: "faq",
-      type: "builtIn",
-      showOnDesktop: false,
-      showInHome: true,
-      orderDesktop: 6,
-      orderHome: 6,
-      isHidden: false,
-      icon: "help-circle",
-      layout: "faq",
-    },
-  ]
-}
-
+// Windows
 export function getWindows(): WindowConfig[] {
-  const windows = readJson<WindowConfig[]>(WINDOWS_FILE, defaultWindows())
-  return windows.sort((a, b) => a.id - b.id)
+  const windows = readJsonFile<WindowConfig[]>("windows.json", [])
+  if (windows.length === 0) {
+    return defaultWindows()
+  }
+  return windows
 }
 
 export function saveWindows(windows: WindowConfig[]): void {
-  writeJson(WINDOWS_FILE, windows)
+  writeJsonFile("windows.json", windows)
+}
+
+// Projects
+export function getProjects(): Project[] {
+  return readJsonFile<Project[]>("projects.json", [])
+}
+
+export function saveProjects(projects: Project[]): void {
+  writeJsonFile("projects.json", projects)
+}
+
+// Content
+export function getContent(section?: string): Record<string, Content> | Content | null {
+  const allContentArray = readJsonFile<ContentEntry[]>("content.json", [])
+  if (section) {
+    const entry = allContentArray.find(c => c.section === section)
+    return entry || null
+  }
+  const contentMap: Record<string, Content> = {}
+  allContentArray.forEach(entry => {
+    contentMap[entry.section] = entry
+  })
+  return contentMap
+}
+
+export function saveContent(contentEntry: Content): void {
+  const allContentArray = readJsonFile<ContentEntry[]>("content.json", [])
+  const index = allContentArray.findIndex(c => c.section === contentEntry.section)
+  if (index !== -1) {
+    allContentArray[index] = { ...allContentArray[index], ...contentEntry }
+  } else {
+    allContentArray.push(contentEntry)
+  }
+  writeJsonFile("content.json", allContentArray)
+}
+
+// Alias for API compatibility
+export const updateContent = (section: string, title: string, content: string, imageUrl?: string) => {
+  const entry: Content = { section, title, content, imageUrl }
+  saveContent(entry)
 }
 
 
+// FAQ
+export function getFaqItems(): FaqItem[] {
+  return readJsonFile<FaqItem[]>("faq.json", [])
+}
 
+export interface FaqItem {
+  id: number
+  question: string
+  answer: string
+  order: number
+  isActive: boolean
+  customTabKey?: string
+}
+
+export interface ContactLink {
+  id: number
+  name: string
+  url: string
+  iconUrl: string
+  order: number
+  isActive: boolean
+  showOnDesktop?: boolean
+}
+
+// ... (existing code)
+
+export function saveFaqItems(items: FaqItem[]): void {
+  writeJsonFile("faq.json", items)
+}
+
+// Contact Links
+export function getContactLinks(): ContactLink[] {
+  return readJsonFile<ContactLink[]>("contact_links.json", [])
+}
+
+export function saveContactLinks(links: ContactLink[]): void {
+  writeJsonFile("contact_links.json", links)
+}
+
+// Background
+export function getBackground(): BackgroundConfig {
+  const data = readJsonFile<any>("background.json", null)
+
+  const defaultStyle: BackgroundStyle = {
+    type: "gradient",
+    color: "#2563eb",
+    from: "#60a5fa",
+    via: "#3b82f6",
+    to: "#2563eb",
+    overlay: true
+  }
+
+  if (!data) {
+    return {
+      desktop: defaultStyle,
+      mobile: defaultStyle
+    }
+  }
+
+  // Migration: If it's the old format (has 'type' at root), move it to desktop and copy to mobile
+  if (data.type && typeof data.type === 'string') {
+    return {
+      desktop: data as BackgroundStyle,
+      mobile: data as BackgroundStyle
+    }
+  }
+
+  // New format
+  return {
+    desktop: data.desktop || defaultStyle,
+    mobile: data.mobile || defaultStyle
+  }
+}
+
+export function saveBackground(config: BackgroundConfig): void {
+  writeJsonFile("background.json", config)
+}
+
+// Alias for API
+export const updateBackground = saveBackground;

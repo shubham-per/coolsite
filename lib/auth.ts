@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verify } from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required');
+}
+const jwtSecret: string = JWT_SECRET;
 
 export function requireAuth(request: NextRequest) {
   const token = request.cookies.get('auth-token')?.value;
@@ -11,8 +15,8 @@ export function requireAuth(request: NextRequest) {
   }
 
   try {
-    const decoded = verify(token, JWT_SECRET) as any;
-    if (!decoded || !decoded.userId) {
+    const decoded = verify(token, jwtSecret) as any;
+    if (!decoded || !decoded.email) {
       throw new Error('Invalid token');
     }
     return decoded;

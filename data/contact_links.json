@@ -1,0 +1,19 @@
+[
+  {
+    "id": 1,
+    "name": "OF",
+    "url": "https://www.youtube.com/",
+    "iconUrl": "/uploads/1768891358376-GlobeLime.png",
+    "order": 1,
+    "isActive": false,
+    "showOnDesktop": false
+  },
+  {
+    "id": 2,
+    "name": "MEs",
+    "url": "https://www.reddit.com/r/DrewDurnil/comments/1hspqoo/adolf_kitler/",
+    "iconUrl": "/uploads/1768891736368-artworks_yHfbqspd8QRZY5ZM_r0ANfQ_t500x500.jpg",
+    "order": 2,
+    "isActive": true
+  }
+]

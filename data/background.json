@@ -1,5 +1,19 @@
 {
-  "type": "image",
-  "imageUrl": "/uploads/1768818507965-56isdisz3jdg1.jpeg",
-  "overlay": true
+  "desktop": {
+    "type": "image",
+    "color": "#000000",
+    "from": "",
+    "to": "",
+    "via": "",
+    "imageUrl": "/uploads/1768890107272-56isdisz3jdg1.jpeg",
+    "overlay": true,
+    "iconColor": "#ffffff"
+  },
+  "mobile": {
+    "type": "gradient",
+    "from": "#60a5fa",
+    "via": "#3b82f6",
+    "to": "#2563eb",
+    "iconColor": "#ffffff"
+  }
 }

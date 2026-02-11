@@ -197,13 +197,25 @@ export async function createProject(project: Omit<Project, "id" | "createdAt" | 
 }
 
 export async function updateProject(id: number, project: Partial<Project>): Promise<void> {
-  const fields = Object.keys(project).filter((key) => key !== "id")
-  if (fields.length === 0) return
+  // Convert camelCase to snake_case for database columns
+  const toSnakeCase = (str: string) => str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 
-  const setClause = fields.map((field) => `${field} = $${fields.indexOf(field) + 2}`).join(", ")
-  const values = [id, ...fields.map((field) => (project as any)[field])]
-
-  await sql`UPDATE projects SET ${sql.unsafe(setClause)}, updated_at = NOW() WHERE id = ${id}`
+  await sql`
+    UPDATE projects SET
+      title = COALESCE(${project.title ?? null}, title),
+      description = COALESCE(${project.description ?? null}, description),
+      category = COALESCE(${project.category ?? null}, category),
+      image_url = COALESCE(${project.imageUrl ?? null}, image_url),
+      photos = COALESCE(${project.photos ? JSON.stringify(project.photos) : null}::jsonb, photos),
+      keywords = COALESCE(${project.keywords ? JSON.stringify(project.keywords) : null}::jsonb, keywords),
+      project_link = COALESCE(${project.projectLink ?? null}, project_link),
+      tags = COALESCE(${project.tags ? JSON.stringify(project.tags) : null}::jsonb, tags),
+      order_index = COALESCE(${project.orderIndex ?? null}, order_index),
+      is_active = COALESCE(${project.isActive ?? null}, is_active),
+      card_style = COALESCE(${project.cardStyle ?? null}, card_style),
+      updated_at = NOW()
+    WHERE id = ${id}
+  `
 }
 
 export async function deleteProject(id: number): Promise<void> {
@@ -219,10 +231,11 @@ export async function trackVisit(data: Omit<Analytics, "id" | "timestamp">): Pro
 }
 
 export async function getAnalytics(days = 30) {
+  // Use parameterized interval with MAKE_INTERVAL for safety
   const pageViews = await sql`
     SELECT page, COUNT(*) as views
     FROM analytics 
-    WHERE timestamp > NOW() - INTERVAL '${days} days'
+    WHERE timestamp > NOW() - MAKE_INTERVAL(days => ${days})
     GROUP BY page
     ORDER BY views DESC
   `
@@ -230,7 +243,7 @@ export async function getAnalytics(days = 30) {
   const dailyVisits = await sql`
     SELECT DATE(timestamp) as date, COUNT(DISTINCT visitor_id) as unique_visitors, COUNT(*) as total_views
     FROM analytics 
-    WHERE timestamp > NOW() - INTERVAL '${days} days'
+    WHERE timestamp > NOW() - MAKE_INTERVAL(days => ${days})
     GROUP BY DATE(timestamp)
     ORDER BY date DESC
   `
@@ -238,7 +251,7 @@ export async function getAnalytics(days = 30) {
   const topReferrers = await sql`
     SELECT referrer, COUNT(*) as visits
     FROM analytics 
-    WHERE timestamp > NOW() - INTERVAL '${days} days' AND referrer IS NOT NULL
+    WHERE timestamp > NOW() - MAKE_INTERVAL(days => ${days}) AND referrer IS NOT NULL
     GROUP BY referrer
     ORDER BY visits DESC
     LIMIT 10
@@ -280,13 +293,19 @@ export async function getDesktopIcons(): Promise<DesktopIcon[]> {
 }
 
 export async function updateDesktopIcon(id: number, icon: Partial<DesktopIcon>): Promise<void> {
-  const fields = Object.keys(icon).filter((key) => key !== "id" && key !== "created_at")
-  if (fields.length === 0) return
-
-  const setClause = fields.map((field) => `${field} = $${fields.indexOf(field) + 2}`).join(", ")
-  const values = [id, ...fields.map((field) => (icon as any)[field])]
-
-  await sql`UPDATE desktop_icons SET ${sql.unsafe(setClause)}, updated_at = NOW() WHERE id = ${id}`
+  await sql`
+    UPDATE desktop_icons SET
+      icon_type = COALESCE(${icon.icon_type ?? null}, icon_type),
+      icon_name = COALESCE(${icon.icon_name ?? null}, icon_name),
+      label = COALESCE(${icon.label ?? null}, label),
+      window_id = COALESCE(${icon.window_id ?? null}, window_id),
+      position_x = COALESCE(${icon.position_x ?? null}, position_x),
+      position_y = COALESCE(${icon.position_y ?? null}, position_y),
+      is_active = COALESCE(${icon.is_active ?? null}, is_active),
+      order_index = COALESCE(${icon.order_index ?? null}, order_index),
+      updated_at = NOW()
+    WHERE id = ${id}
+  `
 }
 
 // Home Icons Management
@@ -308,13 +327,19 @@ export async function getHomeIcons(): Promise<HomeIcon[]> {
 }
 
 export async function updateHomeIcon(id: number, icon: Partial<HomeIcon>): Promise<void> {
-  const fields = Object.keys(icon).filter((key) => key !== "id" && key !== "created_at")
-  if (fields.length === 0) return
-
-  const setClause = fields.map((field) => `${field} = $${fields.indexOf(field) + 2}`).join(", ")
-  const values = [id, ...fields.map((field) => (icon as any)[field])]
-
-  await sql`UPDATE home_icons SET ${sql.unsafe(setClause)}, updated_at = NOW() WHERE id = ${id}`
+  await sql`
+    UPDATE home_icons SET
+      icon_type = COALESCE(${icon.icon_type ?? null}, icon_type),
+      icon_name = COALESCE(${icon.icon_name ?? null}, icon_name),
+      label = COALESCE(${icon.label ?? null}, label),
+      window_id = COALESCE(${icon.window_id ?? null}, window_id),
+      color = COALESCE(${icon.color ?? null}, color),
+      size = COALESCE(${icon.size ?? null}, size),
+      is_active = COALESCE(${icon.is_active ?? null}, is_active),
+      order_index = COALESCE(${icon.order_index ?? null}, order_index),
+      updated_at = NOW()
+    WHERE id = ${id}
+  `
 }
 
 // Wallpaper Management
@@ -365,13 +390,15 @@ export async function createWallpaper(wallpaper: Omit<Wallpaper, "id" | "created
 }
 
 export async function updateWallpaper(id: number, wallpaper: Partial<Wallpaper>): Promise<void> {
-  const fields = Object.keys(wallpaper).filter((key) => key !== "id" && key !== "created_at")
-  if (fields.length === 0) return
-
-  const setClause = fields.map((field) => `${field} = $${fields.indexOf(field) + 2}`).join(", ")
-  const values = [id, ...fields.map((field) => (wallpaper as any)[field])]
-
-  await sql`UPDATE wallpapers SET ${sql.unsafe(setClause)}, updated_at = NOW() WHERE id = ${id}`
+  await sql`
+    UPDATE wallpapers SET
+      type = COALESCE(${wallpaper.type ?? null}, type),
+      name = COALESCE(${wallpaper.name ?? null}, name),
+      config = COALESCE(${wallpaper.config ? JSON.stringify(wallpaper.config) : null}::jsonb, config),
+      is_active = COALESCE(${wallpaper.is_active ?? null}, is_active),
+      updated_at = NOW()
+    WHERE id = ${id}
+  `
 }
 
 export async function setActiveWallpaper(id: number): Promise<void> {
@@ -401,11 +428,18 @@ export async function getSocialIcons(): Promise<SocialIcon[]> {
 }
 
 export async function updateSocialIcon(id: number, icon: Partial<SocialIcon>): Promise<void> {
-  const fields = Object.keys(icon).filter((key) => key !== "id" && key !== "created_at")
-  if (fields.length === 0) return
-
-  const setClause = fields.map((field) => `${field} = $${fields.indexOf(field) + 2}`).join(", ")
-  const values = [id, ...fields.map((field) => (icon as any)[field])]
-
-  await sql`UPDATE social_icons SET ${sql.unsafe(setClause)}, updated_at = NOW() WHERE id = ${id}`
+  await sql`
+    UPDATE social_icons SET
+      platform = COALESCE(${icon.platform ?? null}, platform),
+      icon_name = COALESCE(${icon.icon_name ?? null}, icon_name),
+      label = COALESCE(${icon.label ?? null}, label),
+      url = COALESCE(${icon.url ?? null}, url),
+      color = COALESCE(${icon.color ?? null}, color),
+      position_x = COALESCE(${icon.position_x ?? null}, position_x),
+      position_y = COALESCE(${icon.position_y ?? null}, position_y),
+      is_active = COALESCE(${icon.is_active ?? null}, is_active),
+      order_index = COALESCE(${icon.order_index ?? null}, order_index),
+      updated_at = NOW()
+    WHERE id = ${id}
+  `
 }

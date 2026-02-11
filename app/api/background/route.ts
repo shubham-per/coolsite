@@ -1,92 +1,125 @@
-import { NextRequest, NextResponse } from "next/server"
-import fs from "fs"
-import path from "path"
-import { BackgroundConfig, getBackground, updateBackground } from "@/lib/data"
-import { requireAuth } from "@/lib/auth"
-
-const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads")
-
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true })
-}
-
-function getExtension(filename: string) {
-  return filename.split(".").pop()?.toLowerCase()
-}
-
-function isAllowedImageType(filename: string) {
-  const ext = getExtension(filename)
-  return ext === "jpg" || ext === "jpeg" || ext === "png" || ext === "gif"
-}
+import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
+import { requireAuth } from '@/lib/auth';
 
 export async function GET() {
   try {
-    const config = getBackground()
-    return NextResponse.json(config)
+    const { data, error } = await supabase
+      .from('background')
+      .select('*');
+
+    if (error) {
+      console.error('Background GET error:', error);
+      return NextResponse.json({ error: 'Failed to fetch background' }, { status: 500 });
+    }
+
+    const config: any = {
+      desktop: {
+        type: 'solid',
+        color: '#1a1a2e',
+        from: '#667eea',
+        via: '#764ba2',
+        to: '#f093fb',
+        overlay: false,
+        iconColor: '#ffffff',
+      },
+      mobile: {
+        type: 'solid',
+        color: '#1a1a2e',
+        from: '#667eea',
+        via: '#764ba2',
+        to: '#f093fb',
+        overlay: false,
+        iconColor: '#ffffff',
+      },
+    };
+
+    for (const row of data || []) {
+      const mode = row.mode as 'desktop' | 'mobile';
+      if (mode === 'desktop' || mode === 'mobile') {
+        config[mode] = {
+          type: row.type,
+          color: row.color,
+          from: row.from_color,
+          via: row.via_color,
+          to: row.to_color,
+          overlay: row.overlay,
+          imageUrl: row.image_url,
+          iconColor: row.icon_color,
+        };
+      }
+    }
+
+    return NextResponse.json(config);
   } catch (error) {
-    console.error("Background GET error:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    console.error('Background GET error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-export async function POST(request: NextRequest) {
+export async function PUT(request: NextRequest) {
   try {
     try {
-      requireAuth(request)
+      requireAuth(request);
     } catch {
-      return NextResponse.json({ error: "Authentication required" }, { status: 401 })
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
 
-    const contentType = request.headers.get("content-type") || ""
+    const contentType = request.headers.get('content-type') || '';
+    let data: any = {};
 
-    let config: BackgroundConfig
+    if (contentType.startsWith('multipart/form-data')) {
+      const formData = await request.formData();
+      for (const [key, value] of formData.entries()) {
+        if (typeof value === 'string') {
+          data[key] = value;
+        } else if (value instanceof File) {
+          // Upload to GitHub
+          const uploadFormData = new FormData();
+          uploadFormData.append('file', value);
+          uploadFormData.append('folder', 'backgrounds');
 
-    if (contentType.startsWith("multipart/form-data")) {
-      // @ts-ignore
-      const formData = await request.formData()
-      const type = formData.get("type") as string
+          const uploadResponse = await fetch(`${request.nextUrl.origin}/api/upload-github`, {
+            method: 'POST',
+            body: uploadFormData,
+          });
 
-      if (type === "image") {
-        const file = formData.get("image") as File | null
-        if (!file || typeof file === "string") {
-          return NextResponse.json({ error: "Image file is required" }, { status: 400 })
+          if (uploadResponse.ok) {
+            const uploadResult = await uploadResponse.json();
+            data.imageUrl = uploadResult.url;
+          }
         }
-        if (!isAllowedImageType(file.name)) {
-          return NextResponse.json({ error: "Unsupported image type" }, { status: 400 })
-        }
-        const arrayBuffer = await file.arrayBuffer()
-        const buffer = Buffer.from(arrayBuffer)
-        const filename = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, "_")}`
-        const filePath = path.join(UPLOADS_DIR, filename)
-        fs.writeFileSync(filePath, buffer)
-
-        const overlay = formData.get("overlay") === "true"
-
-        config = {
-          type: "image",
-          imageUrl: `/uploads/${filename}`,
-          overlay,
-        }
-      } else if (type === "solid") {
-        const color = (formData.get("color") as string) || "#000000"
-        config = { type: "solid", color }
-      } else {
-        const from = (formData.get("from") as string) || "#60a5fa"
-        const via = (formData.get("via") as string) || "#3b82f6"
-        const to = (formData.get("to") as string) || "#2563eb"
-        config = { type: "gradient", from, via, to }
       }
     } else {
-      const body = await request.json()
-      config = body as BackgroundConfig
+      data = await request.json();
     }
 
-    updateBackground(config)
-    return NextResponse.json(config)
+    const mode = data.mode || 'desktop';
+
+    const updateData = {
+      mode,
+      type: data.type || 'solid',
+      color: data.color || '#1a1a2e',
+      from_color: data.from || '#667eea',
+      via_color: data.via || '#764ba2',
+      to_color: data.to || '#f093fb',
+      overlay: data.overlay === true || data.overlay === 'true',
+      image_url: data.imageUrl || null,
+      icon_color: data.iconColor || '#ffffff',
+    };
+
+    const { error } = await supabase
+      .from('background')
+      .upsert(updateData, { onConflict: 'mode' });
+
+    if (error) {
+      console.error('Background PUT error:', error);
+      return NextResponse.json({ error: 'Failed to update background' }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("Background POST error:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    console.error('Background PUT error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
-
-

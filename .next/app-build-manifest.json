@@ -36,25 +36,15 @@
       "static/chunks/main-app.js",
       "static/chunks/app/api/windows/route.js"
     ],
+    "/api/contact-links/route": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/api/contact-links/route.js"
+    ],
     "/api/analytics/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/api/analytics/route.js"
-    ],
-    "/admin/loading": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/admin/loading.js"
-    ],
-    "/admin/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/admin/page.js"
-    ],
-    "/api/auth/check/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/auth/check/route.js"
     ]
   }
 }

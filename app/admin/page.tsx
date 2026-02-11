@@ -4,6 +4,8 @@ import type React from "react"
 
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { FaqAccordion } from "@/components/faq-accordion"
+import { ArchivedManager } from "@/components/archived-manager"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -28,11 +30,12 @@ import {
   Wrench,
   Gamepad2,
   Palette,
-   User,
-   Mail,
-   HelpCircle,
-   FolderOpen,
+  User,
+  Mail,
+  HelpCircle,
+  FolderOpen,
 } from "lucide-react"
+import { deriveDefaultIcon } from "@/lib/icon-utils"
 
 interface Project {
   id: number
@@ -54,8 +57,9 @@ interface Content {
   section: string
   title: string
   content: string
+  imageUrl?: string
+  customTabKey?: string
 }
-
 interface Analytics {
   pageViews: { page: string; views: number }[]
   dailyVisits: { date: string; unique_visitors: number; total_views: number }[]
@@ -68,24 +72,24 @@ interface FaqItem {
   answer: string
   order: number
   isActive: boolean
+  customTabKey?: string
 }
 
-type BackgroundConfig =
-  | {
-      type: "solid"
-      color: string
-    }
-  | {
-      type: "gradient"
-      from: string
-      via?: string
-      to: string
-    }
-  | {
-      type: "image"
-      imageUrl: string
-      overlay?: boolean
-    }
+interface BackgroundStyle {
+  type: "solid" | "gradient" | "image"
+  color: string
+  from: string
+  via: string
+  to: string
+  overlay?: boolean
+  imageUrl?: string
+  iconColor?: string
+}
+
+interface BackgroundConfig {
+  desktop: BackgroundStyle
+  mobile: BackgroundStyle
+}
 
 interface WindowConfig {
   id: number
@@ -99,7 +103,18 @@ interface WindowConfig {
   isHidden: boolean
   content?: string
   icon?: string
-  layout?: "content" | "projects" | "faq"
+  customIconUrl?: string
+  layout?: "content" | "projects" | "faq" | "gallery"
+  isArchived?: boolean
+}
+
+interface ContactLink {
+  id: number
+  name: string
+  url: string
+  iconUrl: string
+  order: number
+  isActive: boolean
 }
 
 export default function AdminPanel() {
@@ -117,6 +132,9 @@ export default function AdminPanel() {
   const [isProjectDialogOpen, setIsProjectDialogOpen] = useState(false)
   const [isContentDialogOpen, setIsContentDialogOpen] = useState(false)
   const [isFaqDialogOpen, setIsFaqDialogOpen] = useState(false)
+  const [contactLinks, setContactLinks] = useState<ContactLink[]>([])
+  const [editingContactLink, setEditingContactLink] = useState<ContactLink | null>(null)
+  const [isContactLinkDialogOpen, setIsContactLinkDialogOpen] = useState(false)
 
   useEffect(() => {
     checkAuth()
@@ -165,7 +183,7 @@ export default function AdminPanel() {
   const loadData = async () => {
     try {
       // Load projects
-      const projectsRes = await fetch("/api/projects")
+      const projectsRes = await fetch("/api/projects", { cache: "no-store" })
       const rawProjects = await projectsRes.json()
       const projectsData: Project[] = rawProjects.map((p: any) => ({
         ...p,
@@ -176,37 +194,46 @@ export default function AdminPanel() {
       setProjects(projectsData)
 
       // Load content
-      const sections = ["about", "contact", "faq"]
+      const sections = ["about", "contact", "faq", "about_subtitle", "home_greeting", "home_subtitle"]
       const contentData: Record<string, Content> = {}
 
       for (const section of sections) {
-        const res = await fetch(`/api/content?section=${section}`)
-        const data = await res.json()
-        if (data) contentData[section] = data
+        const res = await fetch(`/api/content?section=${section}`, { cache: "no-store" })
+        if (res.ok) {
+          const data = await res.json()
+          contentData[section] = data
+        }
       }
       setContent(contentData)
 
       // Load analytics
-      const analyticsRes = await fetch("/api/analytics")
+      const analyticsRes = await fetch("/api/analytics", { cache: "no-store" })
       const analyticsData = await analyticsRes.json()
       setAnalytics(analyticsData)
 
+      // Load contact links
+      const linksRes = await fetch("/api/contact-links")
+      if (linksRes.ok) {
+        const linksData = await linksRes.json()
+        setContactLinks(linksData)
+      }
+
       // Load FAQ items
-      const faqRes = await fetch("/api/faq")
+      const faqRes = await fetch("/api/faq", { cache: "no-store" })
       if (faqRes.ok) {
         const faqData = await faqRes.json()
         setFaqItems(faqData)
       }
 
       // Load background config
-      const bgRes = await fetch("/api/background")
+      const bgRes = await fetch("/api/background", { cache: "no-store" })
       if (bgRes.ok) {
         const bgData = await bgRes.json()
         setBackground(bgData)
       }
 
       // Load window config
-      const winRes = await fetch("/api/windows")
+      const winRes = await fetch("/api/windows", { cache: "no-store" })
       if (winRes.ok) {
         const winData = await winRes.json()
         setWindows(winData)
@@ -226,7 +253,14 @@ export default function AdminPanel() {
         const formData = new FormData()
         Object.entries(project).forEach(([key, value]) => {
           if (value === undefined || value === null) return
-          const finalKey = key === "image_url" ? "imageUrl" : key
+          // Skip id if it's 0 (new project)
+          if (key === "id" && !value) return
+          // Map snake_case to camelCase
+          let finalKey = key
+          if (key === "image_url") finalKey = "imageUrl"
+          if (key === "order_index") finalKey = "orderIndex"
+          if (key === "is_active") finalKey = "isActive"
+
           if (Array.isArray(value)) {
             formData.append(finalKey, JSON.stringify(value))
           } else {
@@ -240,11 +274,23 @@ export default function AdminPanel() {
           body: formData,
         })
       } else {
-        // Map image_url -> imageUrl for JSON payload
+        // Map snake_case -> camelCase for JSON payload
         const payloadJson: any = { ...project }
+        // Don't send id when creating new project (id=0 or undefined)
+        if (!payloadJson.id) {
+          delete payloadJson.id
+        }
         if ("image_url" in payloadJson) {
           payloadJson.imageUrl = payloadJson.image_url
           delete payloadJson.image_url
+        }
+        if ("order_index" in payloadJson) {
+          payloadJson.orderIndex = payloadJson.order_index
+          delete payloadJson.order_index
+        }
+        if ("is_active" in payloadJson) {
+          payloadJson.isActive = payloadJson.is_active
+          delete payloadJson.is_active
         }
         response = await fetch("/api/projects", {
           method,
@@ -257,6 +303,9 @@ export default function AdminPanel() {
         loadData()
         setIsProjectDialogOpen(false)
         setEditingProject(null)
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
+        alert(`Failed to save project: ${errorData.error || response.statusText}`)
       }
     } catch (error) {
       alert("Failed to save project")
@@ -288,6 +337,9 @@ export default function AdminPanel() {
         loadData()
         setIsContentDialogOpen(false)
         setEditingContent(null)
+      } else {
+        const errorData = await response.json()
+        alert(`Failed to save content: ${errorData.error || response.statusText}`)
       }
     } catch (error) {
       alert("Failed to save content")
@@ -326,6 +378,46 @@ export default function AdminPanel() {
     }
   }
 
+  const handleSaveContactLink = async (link: ContactLink | Omit<ContactLink, "id"> & { id?: number }) => {
+    try {
+      const method = link.id ? "POST" : "POST" // Always POST for our API implementation handles both
+
+      // Need to handle file upload inside this function if it's a new icon?
+      // Actually, the Form component should handle the file preparation or the API handles it.
+      // Our API expects multipart/form-data for files.
+
+      // We will implement the save logic in the form component or here.
+      // Let's pass the formData directly from the form component or handle it here.
+      // Easiest is to let the Form component construct the FormData and call fetch, or pass FormData up.
+      // Given the pattern in this file, let's look at `handleSaveCustomFaq` or similar. They pass the item.
+      // But for files we need FormData.
+      // I'll define this handler to accept FormData or just refresh data.
+
+      // Wait, let's keep the pattern. I'll define `handleSaveContactLink` to just reload data, 
+      // and let the Form component handle the fetch call since it deals with files.
+      // OR I can make this function accept FormData.
+
+      loadData()
+      setIsContactLinkDialogOpen(false)
+      setEditingContactLink(null)
+    } catch (error) {
+      alert("Failed to save Contact Link")
+    }
+  }
+
+  const handleDeleteContactLink = async (id: number) => {
+    if (!confirm("Are you sure you want to delete this link?")) return
+
+    try {
+      const response = await fetch(`/api/contact-links?id=${id}`, { method: "DELETE" })
+      if (response.ok) {
+        loadData()
+      }
+    } catch (error) {
+      alert("Failed to delete link")
+    }
+  }
+
   const getProjectsByCategory = (category: "engineering" | "games" | "art") => {
     return projects.filter(project => project.category === category && !project.customTabKey)
   }
@@ -334,7 +426,14 @@ export default function AdminPanel() {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <Card className="w-full max-w-md">
-          <CardHeader>
+          <CardHeader className="flex flex-col items-center">
+            <div className="w-16 h-16 bg-gray-300 rounded mr-4 flex items-center justify-center overflow-hidden">
+              {content.about?.imageUrl ? (
+                <img src={content.about.imageUrl} alt="About" className="w-full h-full object-cover" />
+              ) : (
+                <User className="w-8 h-8 text-gray-600" />
+              )}
+            </div>
             <CardTitle className="text-center">Admin Login</CardTitle>
           </CardHeader>
           <CardContent>
@@ -386,51 +485,19 @@ export default function AdminPanel() {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Tabs defaultValue="analytics" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-11">
-            <TabsTrigger value="analytics">
-              <BarChart3 className="w-4 h-4 mr-2" />
-              Analytics
-            </TabsTrigger>
-            <TabsTrigger value="about">
-              <User className="w-4 h-4 mr-2" />
-              About
-            </TabsTrigger>
-            <TabsTrigger value="engineering">
-              <Wrench className="w-4 h-4 mr-2" />
-              Engineering
-            </TabsTrigger>
-            <TabsTrigger value="games">
-              <Gamepad2 className="w-4 h-4 mr-2" />
-              Games
-            </TabsTrigger>
-            <TabsTrigger value="art">
-              <Palette className="w-4 h-4 mr-2" />
-              Art
-            </TabsTrigger>
-            <TabsTrigger value="contact">
-              <Mail className="w-4 h-4 mr-2" />
-              Contact
-            </TabsTrigger>
-            <TabsTrigger value="faq">
-              <HelpCircle className="w-4 h-4 mr-2" />
-              FAQ
-            </TabsTrigger>
-            <TabsTrigger value="background">
-              <Palette className="w-4 h-4 mr-2" />
-              Background
-            </TabsTrigger>
-            <TabsTrigger value="windows">
-              <FileText className="w-4 h-4 mr-2" />
-              Windows
-            </TabsTrigger>
-            <TabsTrigger value="custom-panels">
-              <FolderOpen className="w-4 h-4 mr-2" />
-              Custom Panels
-            </TabsTrigger>
-            <TabsTrigger value="settings">
-              <Settings className="w-4 h-4 mr-2" />
-              Settings
-            </TabsTrigger>
+          <TabsList className="grid w-full grid-cols-3 md:grid-cols-6 lg:grid-cols-11 h-auto">
+            <TabsTrigger value="analytics">Dashboard</TabsTrigger>
+            <TabsTrigger value="about">About</TabsTrigger>
+            <TabsTrigger value="engineering">Eng</TabsTrigger>
+            <TabsTrigger value="games">Games</TabsTrigger>
+            <TabsTrigger value="art">Art</TabsTrigger>
+            <TabsTrigger value="contact">Contact</TabsTrigger>
+            <TabsTrigger value="faq">FAQ</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+            <TabsTrigger value="background">Bg</TabsTrigger>
+            <TabsTrigger value="windows">Window</TabsTrigger>
+            <TabsTrigger value="custom-panels">Panel</TabsTrigger>
+            <TabsTrigger value="archived">Archived</TabsTrigger>
           </TabsList>
 
           {/* Analytics Tab */}
@@ -446,7 +513,7 @@ export default function AdminPanel() {
                     </CardHeader>
                     <CardContent>
                       <div className="text-2xl font-bold">
-                        {analytics.pageViews.reduce((sum, item) => sum + item.views, 0)}
+                        {(analytics.pageViews || []).reduce((sum, item) => sum + item.views, 0)}
                       </div>
                     </CardContent>
                   </Card>
@@ -458,7 +525,7 @@ export default function AdminPanel() {
                     </CardHeader>
                     <CardContent>
                       <div className="text-2xl font-bold">
-                        {analytics.dailyVisits.reduce((sum, item) => sum + item.unique_visitors, 0)}
+                        {(analytics.dailyVisits || []).reduce((sum, item) => sum + item.unique_visitors, 0)}
                       </div>
                     </CardContent>
                   </Card>
@@ -469,7 +536,7 @@ export default function AdminPanel() {
                       <MousePointer className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                      <div className="text-2xl font-bold">{analytics.pageViews[0]?.page || "N/A"}</div>
+                      <div className="text-2xl font-bold">{(analytics.pageViews || [])[0]?.page || "N/A"}</div>
                     </CardContent>
                   </Card>
                 </div>
@@ -482,7 +549,7 @@ export default function AdminPanel() {
                     </CardHeader>
                     <CardContent>
                       <ResponsiveContainer width="100%" height={300}>
-                        <BarChart data={analytics.pageViews}>
+                        <BarChart data={analytics.pageViews || []}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="page" />
                           <YAxis />
@@ -499,7 +566,7 @@ export default function AdminPanel() {
                     </CardHeader>
                     <CardContent>
                       <ResponsiveContainer width="100%" height={300}>
-                        <LineChart data={analytics.dailyVisits}>
+                        <LineChart data={analytics.dailyVisits || []}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="date" />
                           <YAxis />
@@ -539,6 +606,152 @@ export default function AdminPanel() {
                 >
                   <Edit className="w-4 h-4 mr-2" />
                   Edit About
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>About Image</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-600 mb-4">
+                  Upload an image to display in the about window (replaces the default icon).
+                </p>
+                {content.about?.imageUrl && (
+                  <div className="mb-4">
+                    <img
+                      src={content.about.imageUrl}
+                      alt="About"
+                      className="w-16 h-16 object-cover rounded"
+                    />
+                  </div>
+                )}
+                <Input
+                  type="file"
+                  accept="image/*"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0]
+                    if (!file || !content.about) return
+
+                    const formData = new FormData()
+                    formData.append('image', file)
+
+                    try {
+                      const uploadRes = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData,
+                      })
+
+                      if (uploadRes.ok) {
+                        const { url } = await uploadRes.json()
+                        await handleSaveContent({ ...content.about, imageUrl: url })
+                        await loadData()
+                      }
+                    } catch (error) {
+                      console.error('Image upload error:', error)
+                      alert('Failed to upload image')
+                    }
+                  }}
+                />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>About Subtitle</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-600 mb-4">
+                  Edit the subtitle shown below "About Me" in the window header.
+                </p>
+                {content.about_subtitle && (
+                  <p className="text-sm text-gray-700 mb-4 font-medium">
+                    {content.about_subtitle.content}
+                  </p>
+                )}
+                <Button
+                  onClick={() => {
+                    setEditingContent(
+                      content.about_subtitle || {
+                        id: 0,
+                        section: "about_subtitle",
+                        title: "About Subtitle",
+                        content: "Final Year Aerospace Engineering Student",
+                      }
+                    )
+                    setIsContentDialogOpen(true)
+                  }}
+                  size="sm"
+                >
+                  <Edit className="w-4 h-4 mr-2" />
+                  Edit Subtitle
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Home Screen Greeting</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-600 mb-4">
+                  Edit the large greeting text on the desktop home screen.
+                </p>
+                {content.home_greeting && (
+                  <div className="text-sm text-gray-700 mb-4 text-xl font-bold">
+                    {content.home_greeting.content}
+                  </div>
+                )}
+                <Button
+                  onClick={() => {
+                    setEditingContent(
+                      content.home_greeting || {
+                        id: 0,
+                        section: "home_greeting",
+                        title: "Home Greeting",
+                        content: "hi! i'm shubham",
+                      }
+                    )
+                    setIsContentDialogOpen(true)
+                  }}
+                  size="sm"
+                >
+                  <Edit className="w-4 h-4 mr-2" />
+                  Edit Greeting
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Home Screen Subtitle</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-600 mb-4">
+                  Edit the subtitle text shown below the greeting.
+                </p>
+                {content.home_subtitle && (
+                  <p className="text-sm text-gray-700 mb-4">
+                    {content.home_subtitle.content}
+                  </p>
+                )}
+                <Button
+                  onClick={() => {
+                    setEditingContent(
+                      content.home_subtitle || {
+                        id: 0,
+                        section: "home_subtitle",
+                        title: "Home Subtitle",
+                        content: "aerospace engineer, game developer, and digital artist",
+                      }
+                    )
+                    setIsContentDialogOpen(true)
+                  }}
+                  size="sm"
+                >
+                  <Edit className="w-4 h-4 mr-2" />
+                  Edit Subtitle
                 </Button>
               </CardContent>
             </Card>
@@ -750,32 +963,65 @@ export default function AdminPanel() {
 
           {/* Contact Tab */}
           <TabsContent value="contact" className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Contact Section</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-gray-600 mb-4">
-                  Edit the contact text shown in the desktop “contact” window on your homepage.
-                </p>
-                {content.contact && (
-                  <p className="text-sm text-gray-700 mb-4 line-clamp-3">
-                    {content.contact.content.substring(0, 200)}...
-                  </p>
-                )}
-                <Button
-                  onClick={() => {
-                    if (!content.contact) return
-                    setEditingContent(content.contact)
-                    setIsContentDialogOpen(true)
-                  }}
-                  size="sm"
-                >
-                  <Edit className="w-4 h-4 mr-2" />
-                  Edit Contact
-                </Button>
-              </CardContent>
-            </Card>
+            <div className="flex justify-between items-center">
+              <h2 className="text-xl font-semibold">Contact Links</h2>
+              <Button
+                onClick={() => {
+                  setEditingContactLink({
+                    id: 0,
+                    name: "",
+                    url: "",
+                    iconUrl: "",
+                    order: contactLinks.length + 1,
+                    isActive: true,
+                  })
+                  setIsContactLinkDialogOpen(true)
+                }}
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add Link
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              {contactLinks.map((link) => (
+                <Card key={link.id} className="relative group">
+                  <CardContent className="p-4 flex flex-col items-center text-center">
+                    <div className="w-12 h-12 mb-2">
+                      {link.iconUrl ? (
+                        <img src={link.iconUrl} alt={link.name} className="w-full h-full object-contain" />
+                      ) : (
+                        <div className="w-full h-full bg-gray-200 rounded flex items-center justify-center">
+                          <span className="text-xs">No Icon</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="font-semibold text-sm truncate w-full">{link.name}</div>
+                    <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity absolute top-2 right-2 bg-white/90 rounded p-1 shadow-sm">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 w-6 p-0"
+                        onClick={() => {
+                          setEditingContactLink(link)
+                          setIsContactLinkDialogOpen(true)
+                        }}
+                      >
+                        <Edit className="w-3 h-3" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 w-6 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                        onClick={() => handleDeleteContactLink(link.id)}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           </TabsContent>
 
           {/* FAQ Tab */}
@@ -969,7 +1215,7 @@ export default function AdminPanel() {
                 ) : (
                   <div className="space-y-4">
                     {windows
-                      .filter((w) => w.type === "custom")
+                      .filter((w) => w.type === "custom" && !w.isArchived)
                       .map((window) => (
                         <CustomPanelEditor key={window.id} window={window} onUpdate={loadData} />
                       ))}
@@ -978,12 +1224,28 @@ export default function AdminPanel() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          {/* Archived Tab */}
+          <TabsContent value="archived" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Archived Windows</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-gray-600">
+                  Restore archived windows to make them visible again in the Windows & Tabs section.
+                </p>
+                <ArchivedManager windows={windows} onChange={setWindows} />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
         </Tabs>
       </div>
 
       {/* Project Dialog */}
       <Dialog open={isProjectDialogOpen} onOpenChange={setIsProjectDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingProject?.id ? "Edit Project" : "Add Project"}</DialogTitle>
           </DialogHeader>
@@ -1028,7 +1290,23 @@ export default function AdminPanel() {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+
+      {/* Contact Link Dialog */}
+      <Dialog open={isContactLinkDialogOpen} onOpenChange={setIsContactLinkDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingContactLink?.id ? "Edit Link" : "Add Link"}</DialogTitle>
+          </DialogHeader>
+          {editingContactLink && (
+            <ContactLinkForm
+              link={editingContactLink}
+              onSave={() => handleSaveContactLink(editingContactLink)}
+              onCancel={() => setIsContactLinkDialogOpen(false)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </div >
   )
 }
 
@@ -1047,6 +1325,7 @@ function ProjectForm({
   const [keywordInput, setKeywordInput] = useState("")
   const [photoInput, setPhotoInput] = useState("")
   const [mainImageFile, setMainImageFile] = useState<File | null>(null)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -1104,6 +1383,39 @@ function ProjectForm({
     })
   }
 
+  const handlePhotoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setUploadingPhoto(true)
+    try {
+      const uploadFormData = new FormData()
+      uploadFormData.append('file', file)
+      uploadFormData.append('folder', 'photos')
+
+      const response = await fetch('/api/upload-github', {
+        method: 'POST',
+        body: uploadFormData,
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setFormData({
+          ...formData,
+          photos: [...formData.photos, data.url],
+        })
+      } else {
+        alert('Failed to upload photo')
+      }
+    } catch (error) {
+      console.error('Error uploading photo:', error)
+      alert('Failed to upload photo')
+    } finally {
+      setUploadingPhoto(false)
+      e.target.value = '' // Reset file input
+    }
+  }
+
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
@@ -1117,13 +1429,12 @@ function ProjectForm({
       </div>
 
       <div>
-        <Label htmlFor="description">Description</Label>
+        <Label htmlFor="description">Description (optional)</Label>
         <Textarea
           id="description"
           value={formData.description}
           onChange={(e) => setFormData({ ...formData, description: e.target.value })}
           rows={4}
-          required
         />
       </div>
 
@@ -1142,22 +1453,48 @@ function ProjectForm({
       </div>
 
       <div>
-        <Label htmlFor="image_url">Main Image URL (optional)</Label>
+        <Label htmlFor="image_url">Media URL (Image, Video, or YouTube Link)</Label>
+
+        {/* Show current image preview if exists */}
+        {(formData.image_url || (formData as any).imageUrl) && (
+          <div className="mt-2 mb-3">
+            <p className="text-xs text-gray-600 mb-2">Current Media:</p>
+            <div className="flex items-start gap-3 p-3 border rounded-lg bg-gray-50">
+              <img
+                src={formData.image_url || (formData as any).imageUrl}
+                alt="Current media"
+                className="w-24 h-16 object-cover rounded border"
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-700 truncate">
+                  {(formData.image_url || (formData as any).imageUrl || '').split('/').pop() || 'media file'}
+                </p>
+                <p className="text-xs text-gray-500 mt-1 truncate">
+                  {formData.image_url || (formData as any).imageUrl}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <Input
           id="image_url"
-          type="url"
+          type="text"
           value={formData.image_url || ""}
           onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
-          placeholder="https://example.com/image.jpg"
+          placeholder="https://youtube.com/watch?v=... or https://example.com/image.jpg"
         />
+        <p className="text-xs text-gray-500 mt-1">
+          Supports: YouTube links, direct image URLs, or video URLs
+        </p>
         <div className="mt-2">
           <Label htmlFor="main_image_file" className="text-xs text-gray-600">
-            Or upload an image
+            Or upload from your computer
           </Label>
           <Input
             id="main_image_file"
             type="file"
-            accept="image/*"
+            accept="image/*,video/mp4,video/webm,video/ogg,video/quicktime"
             onChange={(e) => setMainImageFile(e.target.files?.[0] || null)}
             className="mt-1"
           />
@@ -1177,29 +1514,48 @@ function ProjectForm({
 
       <div>
         <Label>Additional Photos</Label>
+        <p className="text-xs text-muted-foreground mb-2">Upload from your computer or paste a URL</p>
+
+        {/* File Upload */}
+        <div className="flex gap-2 mb-2">
+          <Input
+            type="file"
+            accept="image/*"
+            onChange={handlePhotoFileUpload}
+            disabled={uploadingPhoto}
+            className="flex-1"
+          />
+          {uploadingPhoto && <span className="text-sm text-muted-foreground self-center">Uploading...</span>}
+        </div>
+
+        {/* URL Input */}
         <div className="flex gap-2 mb-2">
           <Input
             value={photoInput}
             onChange={(e) => setPhotoInput(e.target.value)}
-            placeholder="Add photo URL"
+            placeholder="Or paste photo URL"
             onKeyPress={(e) => e.key === "Enter" && (e.preventDefault(), addPhoto())}
           />
           <Button type="button" onClick={addPhoto} size="sm">
-            Add
+            Add URL
           </Button>
         </div>
-        <div className="space-y-2">
+
+        {/* Photo List */}
+        <div className="grid grid-cols-4 gap-2">
           {formData.photos.map((photo, index) => (
-            <div key={index} className="flex items-center gap-2 p-2 border rounded">
-              <img src={photo} alt={`Photo ${index + 1}`} className="w-12 h-12 object-cover rounded" />
-              <span className="flex-1 text-sm truncate">{photo}</span>
+            <div key={index} className="relative group">
+              <img src={photo} alt={`Photo ${index + 1}`} className="w-full h-20 object-cover rounded border" />
               <button
                 type="button"
                 onClick={() => removePhoto(photo)}
-                className="text-red-500 hover:text-red-700"
+                className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
               >
                 ×
               </button>
+              <span className="absolute bottom-1 left-1 bg-black/50 text-white text-xs px-1 rounded">
+                {index + 1}
+              </span>
             </div>
           ))}
         </div>
@@ -1298,32 +1654,49 @@ function ContentForm({
 }) {
   const [formData, setFormData] = useState(content)
 
+  // Hide title for these specific sections as it's redundant for the user
+  const hideTitle = ["about_subtitle", "home_greeting", "home_subtitle"].includes(content.section)
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    onSave(formData)
+    // Ensure section is preserved and title is populated if hidden
+    const payload = {
+      ...formData,
+      section: content.section || formData.section,
+      title: hideTitle ? (content.title || "Subtitle") : formData.title
+    }
+
+    // DEBUG: Alert the payload to verify what's being sent
+    // alert("Debug Payload: " + JSON.stringify(payload))
+
+    onSave(payload)
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div>
-        <Label htmlFor="title">Title</Label>
-        <Input
-          id="title"
-          value={formData.title}
-          onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-          required
-        />
-      </div>
+      {!hideTitle && (
+        <div>
+          <Label htmlFor="title">Title</Label>
+          <Input
+            id="title"
+            value={formData.title || ""}
+            onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+            required
+          />
+        </div>
+      )}
 
       <div>
         <Label htmlFor="content">Content</Label>
         <Textarea
           id="content"
-          value={formData.content}
+          value={formData.content || ""}
           onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-          rows={8}
           required
         />
+        <p className="text-xs text-gray-500 mt-1">
+          Supports rich text: **bold**, *italic*, [link](url), and lists (- item).
+        </p>
       </div>
 
       <div className="flex justify-end gap-2">
@@ -1374,9 +1747,11 @@ function FaqForm({
           id="answer"
           value={formData.answer}
           onChange={(e) => setFormData({ ...formData, answer: e.target.value })}
-          rows={6}
           required
         />
+        <p className="text-xs text-gray-500 mt-1">
+          Supports rich text: **bold**, *italic*, [link](url), and lists (- item).
+        </p>
       </div>
 
       <div>
@@ -1416,6 +1791,245 @@ function FaqForm({
   )
 }
 
+function ContactLinkForm({
+  link,
+  onSave,
+  onCancel,
+}: {
+  link: ContactLink
+  onSave: () => void
+  onCancel: () => void
+}) {
+  const [formData, setFormData] = useState({ ...link })
+  const [file, setFile] = useState<File | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+
+    try {
+      const data = new FormData()
+      if (link.id) data.append("id", link.id.toString())
+      data.append("name", formData.name)
+      data.append("url", formData.url)
+      data.append("order", formData.order.toString())
+      data.append("isActive", formData.isActive.toString())
+      data.append("showOnDesktop", (formData.showOnDesktop !== false).toString())
+      if (file) {
+        data.append("icon", file)
+      }
+
+      const response = await fetch("/api/contact-links", {
+        method: "POST",
+        body: data,
+      })
+
+      if (response.ok) {
+        onSave()
+      } else {
+        alert("Failed to save link")
+      }
+    } catch (error) {
+      console.error(error)
+      alert("Error saving link")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <Label htmlFor="name">Name</Label>
+        <Input
+          id="name"
+          value={formData.name}
+          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+          required
+        />
+      </div>
+      <div>
+        <Label htmlFor="url">URL</Label>
+        <Input
+          id="url"
+          value={formData.url}
+          onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+          required
+        />
+      </div>
+      <div>
+        <Label htmlFor="order">Order</Label>
+        <Input
+          id="order"
+          type="number"
+          value={formData.order}
+          onChange={(e) => setFormData({ ...formData, order: parseInt(e.target.value) || 0 })}
+        />
+      </div>
+      <div>
+        <Label>Icon</Label>
+        {formData.iconUrl && (
+          <div className="mb-2">
+            <img src={formData.iconUrl} alt="Icon" className="w-12 h-12 object-contain bg-gray-100 rounded p-1" />
+          </div>
+        )}
+        <Input
+          type="file"
+          accept="image/*"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+        />
+      </div>
+      <div className="flex items-center space-x-2">
+        <input
+          id="isActive"
+          type="checkbox"
+          checked={formData.isActive}
+          onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
+        />
+        <Label htmlFor="isActive">Active</Label>
+      </div>
+      <div className="flex items-center space-x-2">
+        <input
+          id="showOnDesktop"
+          type="checkbox"
+          checked={formData.showOnDesktop !== false} // Default to true if undefined
+          onChange={(e) => setFormData({ ...formData, showOnDesktop: e.target.checked })}
+        />
+        <Label htmlFor="showOnDesktop">Show on Desktop</Label>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={saving}>
+          {saving ? "Saving..." : "Save"}
+        </Button>
+      </div>
+    </form >
+  )
+  // Site Settings Form Component
+  function SiteSettingsForm({
+    onSaved,
+  }: {
+    onSaved: () => void
+  }) {
+    const [loading, setLoading] = useState(true)
+    const [saving, setSaving] = useState(false)
+    const [config, setConfig] = useState<SiteConfig>({ title: "" })
+    const [faviconFile, setFaviconFile] = useState<File | null>(null)
+
+    useEffect(() => {
+      fetch("/api/site-config")
+        .then((res) => res.json())
+        .then((data) => {
+          setConfig(data)
+          setLoading(false)
+        })
+        .catch((err) => {
+          console.error(err)
+          setLoading(false)
+        })
+    }, [])
+
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault()
+      setSaving(true)
+
+      try {
+        const formData = new FormData()
+        formData.append("title", config.title)
+        if (faviconFile) {
+          formData.append("favicon", faviconFile)
+        }
+
+        const response = await fetch("/api/site-config", {
+          method: "POST",
+          body: formData,
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          setConfig(data.config)
+          setFaviconFile(null)
+          onSaved()
+          alert("Settings saved successfully! You may need to refresh the page to see changes.")
+        } else {
+          alert("Failed to save settings")
+        }
+      } catch (error) {
+        console.error(error)
+        alert("Error saving settings")
+      } finally {
+        setSaving(false)
+      }
+    }
+
+    if (loading) return <div>Loading settings...</div>
+
+    return (
+      <div className="max-w-2xl">
+        <h2 className="text-2xl font-bold mb-6">Site Settings</h2>
+        <Card className="p-6">
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <Label htmlFor="siteTitle">Site Title</Label>
+              <Input
+                id="siteTitle"
+                value={config.title}
+                onChange={(e) => setConfig({ ...config, title: e.target.value })}
+                placeholder="e.g. My Portfolio"
+                required
+                className="mt-1"
+              />
+              <p className="text-sm text-gray-500 mt-1">
+                This appears in the browser tab and search results.
+              </p>
+            </div>
+
+            <div>
+              <Label>Favicon</Label>
+              <div className="flex items-start gap-4 mt-2">
+                <div className="flex-shrink-0">
+                  {config.faviconUrl ? (
+                    <div className="border rounded p-2 bg-gray-50">
+                      <img
+                        src={config.faviconUrl}
+                        alt="Current Favicon"
+                        className="w-8 h-8 object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="w-12 h-12 border rounded bg-gray-100 flex items-center justify-center text-gray-400">
+                      No Icon
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <Input
+                    type="file"
+                    accept="image/x-icon,image/png,image/svg+xml,image/jpeg"
+                    onChange={(e) => setFaviconFile(e.target.files?.[0] || null)}
+                  />
+                  <p className="text-sm text-gray-500 mt-1">
+                    Upload a new favicon (ICO, PNG, SVG, JPG). Recommended size: 32x32 or larger.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-4">
+              <Button type="submit" disabled={saving}>
+                {saving ? "Saving..." : "Save Changes"}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      </div>
+    )
+  }
+}
+
 // Background Form Component
 function BackgroundForm({
   initialConfig,
@@ -1424,20 +2038,47 @@ function BackgroundForm({
   initialConfig: BackgroundConfig | null
   onSaved: (config: BackgroundConfig) => void
 }) {
-  const [type, setType] = useState<BackgroundConfig["type"]>(initialConfig?.type || "gradient")
+  const [mode, setMode] = useState<"desktop" | "mobile">("desktop")
+
+  const getStyle = (config: BackgroundConfig | null, m: "desktop" | "mobile"): BackgroundStyle => {
+    if (!config) return { type: "gradient", color: "#2563eb", from: "#60a5fa", via: "#3b82f6", to: "#2563eb", overlay: true }
+    return config[m] || { type: "gradient", color: "#2563eb", from: "#60a5fa", via: "#3b82f6", to: "#2563eb", overlay: true }
+  }
+
+  const currentStyle = getStyle(initialConfig, mode)
+
+  const [type, setType] = useState<BackgroundStyle["type"]>(currentStyle.type)
   const [solidColor, setSolidColor] = useState(
-    initialConfig && initialConfig.type === "solid" ? initialConfig.color : "#2563eb",
+    currentStyle.type === "solid" ? currentStyle.color : "#2563eb",
   )
   const [from, setFrom] = useState(
-    initialConfig && initialConfig.type === "gradient" ? initialConfig.from : "#60a5fa",
+    currentStyle.type === "gradient" ? currentStyle.from : "#60a5fa",
   )
   const [via, setVia] = useState(
-    initialConfig && initialConfig.type === "gradient" ? initialConfig.via || "#3b82f6" : "#3b82f6",
+    currentStyle.type === "gradient" ? currentStyle.via || "#3b82f6" : "#3b82f6",
   )
-  const [to, setTo] = useState(initialConfig && initialConfig.type === "gradient" ? initialConfig.to : "#2563eb")
+  const [to, setTo] = useState(currentStyle.type === "gradient" ? currentStyle.to : "#2563eb")
   const [overlay, setOverlay] = useState(
-    initialConfig && initialConfig.type === "image" ? initialConfig.overlay ?? true : true,
+    currentStyle.type === "image" ? currentStyle.overlay ?? true : true,
   )
+  const [iconColor, setIconColor] = useState(currentStyle.iconColor || "#ffffff")
+
+  // Sync state on mode change
+  useEffect(() => {
+    const style = getStyle(initialConfig, mode)
+    setType(style.type)
+    if (style.type === "solid") {
+      setSolidColor(style.color)
+    } else if (style.type === "gradient") {
+      setFrom(style.from)
+      setVia(style.via)
+      setTo(style.to)
+    } else if (style.type === "image") {
+      setOverlay(style.overlay ?? true)
+    }
+    setIconColor(style.iconColor || "#ffffff")
+    setImageFile(null)
+  }, [mode, initialConfig])
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -1445,7 +2086,6 @@ function BackgroundForm({
     e.preventDefault()
     setSaving(true)
     try {
-      let config: BackgroundConfig
       let body: BodyInit
       let headers: HeadersInit | undefined
 
@@ -1456,19 +2096,20 @@ function BackgroundForm({
           formData.append("image", imageFile)
         }
         formData.append("overlay", overlay ? "true" : "false")
+        formData.append("iconColor", iconColor)
         body = formData
         headers = undefined
       } else if (type === "solid") {
-        config = { type: "solid", color: solidColor }
-        body = JSON.stringify(config)
+        const style = { type: "solid", color: solidColor, iconColor }
+        body = JSON.stringify(style)
         headers = { "Content-Type": "application/json" }
       } else {
-        config = { type: "gradient", from, via, to }
-        body = JSON.stringify(config)
+        const style = { type: "gradient", from, via, to, iconColor }
+        body = JSON.stringify(style)
         headers = { "Content-Type": "application/json" }
       }
 
-      const res = await fetch("/api/background", {
+      const res = await fetch(`/api/background?mode=${mode}`, {
         method: "POST",
         body,
         headers,
@@ -1481,117 +2122,171 @@ function BackgroundForm({
 
       const saved = (await res.json()) as BackgroundConfig
       onSaved(saved)
+      setImageFile(null)
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <div>
-        <Label>Background Type</Label>
-        <div className="flex gap-4 mt-2">
-          <button
-            type="button"
-            onClick={() => setType("solid")}
-            className={`px-3 py-1 text-sm rounded border ${
-              type === "solid" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700"
-            }`}
-          >
-            Solid
-          </button>
-          <button
-            type="button"
-            onClick={() => setType("gradient")}
-            className={`px-3 py-1 text-sm rounded border ${
-              type === "gradient" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700"
-            }`}
-          >
-            Gradient
-          </button>
-          <button
-            type="button"
-            onClick={() => setType("image")}
-            className={`px-3 py-1 text-sm rounded border ${
-              type === "image" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700"
-            }`}
-          >
-            Image
-          </button>
-        </div>
+    <div className="space-y-6">
+      <div className="flex border-b">
+        <button
+          type="button"
+          className={`px-4 py-2 text-sm font-medium ${mode === "desktop" ? "border-b-2 border-blue-500 text-blue-600" : "text-gray-500"}`}
+          onClick={() => setMode("desktop")}
+        >
+          Desktop Background
+        </button>
+        <button
+          type="button"
+          className={`px-4 py-2 text-sm font-medium ${mode === "mobile" ? "border-b-2 border-blue-500 text-blue-600" : "text-gray-500"}`}
+          onClick={() => setMode("mobile")}
+        >
+          Mobile Background
+        </button>
       </div>
 
-      {type === "solid" && (
-        <div className="space-y-2">
-          <Label>Color</Label>
+      <form onSubmit={handleSubmit} className="space-y-6 pt-4">
+        <div>
+          <Label>Background Type</Label>
+          <div className="flex gap-4 mt-2">
+            <button
+              type="button"
+              onClick={() => setType("solid")}
+              className={`px-3 py-1 text-sm rounded border ${type === "solid" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700"
+                }`}
+            >
+              Solid
+            </button>
+            <button
+              type="button"
+              onClick={() => setType("gradient")}
+              className={`px-3 py-1 text-sm rounded border ${type === "gradient" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700"
+                }`}
+            >
+              Gradient
+            </button>
+            <button
+              type="button"
+              onClick={() => setType("image")}
+              className={`px-3 py-1 text-sm rounded border ${type === "image" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700"
+                }`}
+            >
+              Image
+            </button>
+          </div>
+        </div>
+
+        {type === "solid" && (
+          <div className="space-y-2">
+            <Label>Color</Label>
+            <div className="flex items-center gap-3">
+              <Input
+                type="color"
+                value={solidColor}
+                onChange={(e) => setSolidColor(e.target.value)}
+                className="w-16 p-1"
+              />
+              <Input value={solidColor} onChange={(e) => setSolidColor(e.target.value)} className="flex-1" />
+            </div>
+          </div>
+        )}
+
+        {type === "gradient" && (
+          <div className="space-y-4">
+            <div>
+              <Label>From</Label>
+              <div className="flex items-center gap-3 mt-1">
+                <Input type="color" value={from} onChange={(e) => setFrom(e.target.value)} className="w-16 p-1" />
+                <Input value={from} onChange={(e) => setFrom(e.target.value)} className="flex-1" />
+              </div>
+            </div>
+            <div>
+              <Label>Via (optional)</Label>
+              <div className="flex items-center gap-3 mt-1">
+                <Input type="color" value={via} onChange={(e) => setVia(e.target.value)} className="w-16 p-1" />
+                <Input value={via} onChange={(e) => setVia(e.target.value)} className="flex-1" />
+              </div>
+            </div>
+            <div>
+              <Label>To</Label>
+              <div className="flex items-center gap-3 mt-1">
+                <Input type="color" value={to} onChange={(e) => setTo(e.target.value)} className="w-16 p-1" />
+                <Input value={to} onChange={(e) => setTo(e.target.value)} className="flex-1" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {type === "image" && (
+          <div className="space-y-3">
+            {/* Show current image if set */}
+            {currentStyle.type === "image" && currentStyle.imageUrl && (
+              <div className="space-y-2">
+                <Label>Current Image</Label>
+                <div className="flex items-start gap-3 p-3 border rounded-lg bg-gray-50">
+                  <img
+                    src={currentStyle.imageUrl}
+                    alt="Current background"
+                    className="w-24 h-16 object-cover rounded border"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-700 truncate">
+                      {currentStyle.imageUrl.split('/').pop() || 'background.jpg'}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Currently in use
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div>
+              <Label>{currentStyle.imageUrl ? "Upload New Image" : "Upload Image"}</Label>
+              <Input
+                key={mode}
+                type="file"
+                accept="image/*"
+                onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+                className="mt-1"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="overlay"
+                type="checkbox"
+                checked={overlay}
+                onChange={(e) => setOverlay(e.target.checked)}
+              />
+              <Label htmlFor="overlay">Add subtle overlay for readability</Label>
+            </div>
+          </div>
+        )}
+
+
+
+        <div className="space-y-2 pt-4 border-t">
+          <Label>Icon Text Color</Label>
           <div className="flex items-center gap-3">
             <Input
               type="color"
-              value={solidColor}
-              onChange={(e) => setSolidColor(e.target.value)}
+              value={iconColor}
+              onChange={(e) => setIconColor(e.target.value)}
               className="w-16 p-1"
             />
-            <Input value={solidColor} onChange={(e) => setSolidColor(e.target.value)} className="flex-1" />
+            <Input value={iconColor} onChange={(e) => setIconColor(e.target.value)} className="flex-1" />
           </div>
         </div>
-      )}
 
-      {type === "gradient" && (
-        <div className="space-y-4">
-          <div>
-            <Label>From</Label>
-            <div className="flex items-center gap-3 mt-1">
-              <Input type="color" value={from} onChange={(e) => setFrom(e.target.value)} className="w-16 p-1" />
-              <Input value={from} onChange={(e) => setFrom(e.target.value)} className="flex-1" />
-            </div>
-          </div>
-          <div>
-            <Label>Via (optional)</Label>
-            <div className="flex items-center gap-3 mt-1">
-              <Input type="color" value={via} onChange={(e) => setVia(e.target.value)} className="w-16 p-1" />
-              <Input value={via} onChange={(e) => setVia(e.target.value)} className="flex-1" />
-            </div>
-          </div>
-          <div>
-            <Label>To</Label>
-            <div className="flex items-center gap-3 mt-1">
-              <Input type="color" value={to} onChange={(e) => setTo(e.target.value)} className="w-16 p-1" />
-              <Input value={to} onChange={(e) => setTo(e.target.value)} className="flex-1" />
-            </div>
-          </div>
+        <div className="flex justify-end">
+          <Button type="submit" disabled={saving}>
+            <Save className="w-4 h-4 mr-2" />
+            {saving ? "Saving..." : "Save Background"}
+          </Button>
         </div>
-      )}
-
-      {type === "image" && (
-        <div className="space-y-3">
-          <div>
-            <Label>Upload Image</Label>
-            <Input
-              type="file"
-              accept="image/*"
-              onChange={(e) => setImageFile(e.target.files?.[0] || null)}
-              className="mt-1"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              id="overlay"
-              type="checkbox"
-              checked={overlay}
-              onChange={(e) => setOverlay(e.target.checked)}
-            />
-            <Label htmlFor="overlay">Add subtle overlay for readability</Label>
-          </div>
-        </div>
-      )}
-
-      <div className="flex justify-end">
-        <Button type="submit" disabled={saving}>
-          <Save className="w-4 h-4 mr-2" />
-          {saving ? "Saving..." : "Save Background"}
-        </Button>
-      </div>
-    </form>
+      </form>
+    </div>
   )
 }
 
@@ -1607,17 +2302,35 @@ function WindowsManager({
   const [creating, setCreating] = useState(false)
   const [iconFiles, setIconFiles] = useState<Record<number, File>>({})
   const [iconPreviews, setIconPreviews] = useState<Record<number, string>>({})
-  const builtIn = windows.filter((w) => w.type === "builtIn")
-  const custom = windows.filter((w) => w.type === "custom")
+  const builtIn = windows.filter((w) => w.type === "builtIn" && !w.isArchived)
+  const custom = windows.filter((w) => w.type === "custom" && !w.isArchived)
+
+  const handleIconFileChange = (windowId: number, file: File | null) => {
+    if (file) {
+      setIconFiles(prev => ({ ...prev, [windowId]: file }))
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setIconPreviews(prev => ({ ...prev, [windowId]: reader.result as string }))
+      }
+      reader.readAsDataURL(file)
+    } else {
+      const newFiles = { ...iconFiles }
+      delete newFiles[windowId]
+      setIconFiles(newFiles)
+      const newPreviews = { ...iconPreviews }
+      delete newPreviews[windowId]
+      setIconPreviews(newPreviews)
+    }
+  }
 
   const updateWindowLocal = (id: number, patch: Partial<WindowConfig>) => {
     onChange(
       windows.map((w) =>
         w.id === id
           ? {
-              ...w,
-              ...patch,
-            }
+            ...w,
+            ...patch,
+          }
           : w,
       ),
     )
@@ -1758,8 +2471,46 @@ function WindowsManager({
                   />
                   Hidden
                 </label>
+                <label className="flex items-center gap-1 text-red-600">
+                  <input
+                    type="checkbox"
+                    checked={w.isArchived}
+                    onChange={(e) => {
+                      if (confirm("Are you sure you want to archive this window?")) {
+                        saveWindow({ ...w, isArchived: e.target.checked })
+                      }
+                    }}
+                  />
+                  Move to archive
+                </label>
               </div>
             </div>
+
+            <div className="mt-2 text-xs">
+              <Label className="text-xs mb-1 block">Icon</Label>
+              <div className="flex gap-2 items-center">
+
+
+                <div className="flex-1 flex gap-2 items-center">
+                  <Input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleIconFileChange(w.id, e.target.files?.[0] || null)}
+                    className="h-8 text-xs py-1"
+                  />
+                  {(iconPreviews[w.id] || w.customIconUrl) && (
+                    <div className="w-8 h-8 relative border rounded overflow-hidden bg-gray-50 flex-none">
+                      <img
+                        src={iconPreviews[w.id] || w.customIconUrl}
+                        alt="Icon"
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="flex items-center gap-3 text-xs">
               <div>
                 <Label className="text-xs">Desktop order</Label>
@@ -1845,6 +2596,18 @@ function WindowsManager({
                     />
                     Hidden
                   </label>
+                  <label className="flex items-center gap-1 text-red-600">
+                    <input
+                      type="checkbox"
+                      checked={w.isArchived}
+                      onChange={(e) => {
+                        if (confirm("Are you sure you want to archive this window?")) {
+                          saveWindow({ ...w, isArchived: e.target.checked })
+                        }
+                      }}
+                    />
+                    Move to archive
+                  </label>
                 </div>
               </div>
               <div className="flex items-center gap-3 text-xs">
@@ -1869,75 +2632,8 @@ function WindowsManager({
               </div>
             </div>
 
-            <div>
-              <Label className="text-xs">Window content</Label>
-              <Textarea
-                value={w.content || ""}
-                onChange={(e) => updateWindowLocal(w.id, { content: e.target.value })}
-                rows={3}
-                className="text-sm mt-1"
-              />
-            </div>
-
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs">
-                <Label className="text-xs">Layout</Label>
-                <select
-                  value={w.layout || "content"}
-                  onChange={(e) =>
-                    updateWindowLocal(w.id, {
-                      layout: e.target.value as WindowConfig["layout"],
-                    })
-                  }
-                  className="border rounded h-8 text-xs px-1"
-                >
-                  <option value="content">Simple content (like About)</option>
-                  <option value="projects">Projects-style</option>
-                  <option value="faq">FAQ-style</option>
-                </select>
-                <Label className="text-xs ml-4">Icon</Label>
-                <select
-                  value={w.icon || "folder"}
-                  onChange={(e) => updateWindowLocal(w.id, { icon: e.target.value })}
-                  className="border rounded h-8 text-xs px-1"
-                >
-                  <option value="user">User</option>
-                  <option value="rocket">Rocket</option>
-                  <option value="gamepad2">Gamepad</option>
-                  <option value="palette">Palette</option>
-                  <option value="mail">Mail</option>
-                  <option value="help-circle">Help</option>
-                  <option value="folder">Folder</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label className="text-xs">Custom Icon Upload</Label>
-                <Input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0] || null
-                    if (file) {
-                      setIconFiles({ ...iconFiles, [w.id]: file })
-                      const reader = new FileReader()
-                      reader.onloadend = () => {
-                        setIconPreviews({ ...iconPreviews, [w.id]: reader.result as string })
-                      }
-                      reader.readAsDataURL(file)
-                    }
-                  }}
-                  className="h-8 text-xs"
-                />
-                {(iconPreviews[w.id] || w.customIconUrl) && (
-                  <img
-                    src={iconPreviews[w.id] || w.customIconUrl || ""}
-                    alt="Icon preview"
-                    className="w-12 h-12 object-contain border rounded mt-1"
-                  />
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => deleteWindow(w.id)} disabled={savingId === w.id}>
+            <div className="flex justify-end gap-2 mt-3">
+              <Button size="sm" variant="outline" onClick={() => deleteWindow(w.id)} disabled={savingId === w.id}>
                 <Trash2 className="w-3 h-3 mr-1" />
                 Delete
               </Button>
@@ -1945,12 +2641,11 @@ function WindowsManager({
                 <Save className="w-3 h-3 mr-1" />
                 Save
               </Button>
-              </div>
             </div>
           </div>
         ))}
       </div>
-    </div>
+    </div >
   )
 }
 
@@ -1975,8 +2670,8 @@ function CustomPanelEditor({
 
   useEffect(() => {
     setFormData(window)
-    // Load custom projects for this tab if layout is projects
-    if (window.layout === "projects") {
+    // Load custom projects for this tab if layout is projects or gallery
+    if (window.layout === "projects" || window.layout === "gallery") {
       loadCustomProjects()
     }
     // Load custom FAQ items for this tab if layout is faq
@@ -2206,7 +2901,8 @@ function CustomPanelEditor({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="content">Simple Content (like About)</SelectItem>
-              <SelectItem value="projects">Projects List (like Engineering/Games/Art)</SelectItem>
+              <SelectItem value="projects">Projects List (like Engineering/Games)</SelectItem>
+              <SelectItem value="gallery">Gallery Style (like Art)</SelectItem>
               <SelectItem value="faq">FAQ Style</SelectItem>
             </SelectContent>
           </Select>
@@ -2268,8 +2964,8 @@ function CustomPanelEditor({
           </div>
         </div>
 
-        {formData.layout === "projects" ? (
-          // Projects Layout - Show project management interface
+        {(formData.layout === "projects" || formData.layout === "gallery") ? (
+          // Projects/Gallery Layout - Show project management interface
           <div>
             <div className="flex justify-between items-center mb-4">
               <Label className="text-lg font-semibold">Projects for this tab</Label>
@@ -2364,37 +3060,34 @@ function CustomPanelEditor({
                 Add FAQ Item
               </Button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 gap-6">
               {customFaqItems.length === 0 ? (
                 <p className="text-sm text-gray-500 col-span-full">No FAQ items yet. Click "Add FAQ Item" to get started.</p>
               ) : (
-                customFaqItems.map((item) => (
-                  <Card key={item.id}>
-                    <CardHeader>
-                      <CardTitle className="text-lg">{item.question}</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-gray-600 mb-4 line-clamp-3">{item.answer}</p>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">Order: {item.order}</span>
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() => {
-                              setEditingCustomFaq(item)
-                              setIsCustomFaqDialogOpen(true)
-                            }}
-                          >
-                            <Edit className="w-4 h-4" />
-                          </Button>
-                          <Button size="sm" variant="destructive" onClick={() => handleDeleteCustomFaq(item.id)}>
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
+                <div className="space-y-2">
+                  {customFaqItems.map((item) => (
+                    <div key={item.id} className="group relative">
+                      <div className="pr-20">
+                        <FaqAccordion items={[item]} />
                       </div>
-                    </CardContent>
-                  </Card>
-                ))
+                      <div className="absolute top-4 right-2 flex gap-2 opacity-100 transition-opacity">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            setEditingCustomFaq(item)
+                            setIsCustomFaqDialogOpen(true)
+                          }}
+                        >
+                          <Edit className="w-3 h-3" />
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={() => handleDeleteCustomFaq(item.id)}>
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
@@ -2408,6 +3101,9 @@ function CustomPanelEditor({
               rows={8}
               placeholder="Enter content for this panel..."
             />
+            <p className="text-xs text-gray-500 mt-1">
+              Supports rich text: **bold**, *italic*, [link](url), [text](#color), and lists (- item).
+            </p>
           </div>
         )}
 
